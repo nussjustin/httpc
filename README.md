@@ -33,7 +33,7 @@ func main() {
 }
 ```
 
-### Using Endpoint
+### Using endpoints
 
 Endpoints allow defining different options and logic for handling requests and responses to specific endpoints.
 
