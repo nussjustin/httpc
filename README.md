@@ -56,7 +56,7 @@ var productEndpoint = &httpc.Endpoint[Product]{
     },
     Handlers: []httpc.Handler{
         // Decode the response JSON, but only if the response code is 200
-        httpc.StatusHandler(httpc.StatusOK, httpc.JSONHandler()),
+        httpc.StatusHandler(200, httpc.JSONHandler()),
     },
 }
 ```
