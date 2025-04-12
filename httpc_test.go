@@ -389,7 +389,7 @@ func TestWithJSON(t *testing.T) {
 
 		req := must(httpc.NewRequest(t.Context(), "POST", "/",
 			httpc.WithHeader("Content-Type", "application/test; some=value"),
-			httpc.WithJSON(value)))
+			httpc.WithJSON(value, json.Deterministic(true))))
 
 		if got, want := req.Header["Content-Type"], []string{"application/test; some=value"}; !slices.Equal(got, want) {
 			t.Errorf("Header[\"Content-Type\"] = %v, want %v", got, want)
