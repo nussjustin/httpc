@@ -180,7 +180,7 @@ func TestWithPathValue(t *testing.T) {
 			t.Fatal("got no error")
 		}
 
-		var merr *httpc.MissingPathValueError
+		var merr *httpc.UnusedPathValueError
 		if !errors.As(err, &merr) {
 			t.Fatalf("got error of type %T, expected %T", err, merr)
 		}
@@ -201,7 +201,7 @@ func TestWithPathValue(t *testing.T) {
 			t.Fatal("got no error")
 		}
 
-		var merr *httpc.MissingPathValueError
+		var merr *httpc.UnusedPathValueError
 		if !errors.As(err, &merr) {
 			t.Fatalf("got error of type %T, expected %T", err, merr)
 		}

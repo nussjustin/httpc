@@ -49,8 +49,8 @@ func WithBaseURL(baseURL *neturl.URL) RequestOption {
 	}
 }
 
-// MissingPathValueError is returned when a path value specified by [WithPathValue] is not found.
-type MissingPathValueError struct {
+// UnusedPathValueError is returned when a path value specified by [WithPathValue] is not found in the path.
+type UnusedPathValueError struct {
 	// URL is the URL as it was at the time the error occurred.
 	URL neturl.URL
 
@@ -62,7 +62,7 @@ type MissingPathValueError struct {
 }
 
 // Error implements the [error] interface.
-func (e *MissingPathValueError) Error() string {
+func (e *UnusedPathValueError) Error() string {
 	return fmt.Sprintf("placeholder :%s not found in path %s", e.Name, e.URL.Path)
 }
 
@@ -78,7 +78,7 @@ func (e *MissingPathValueError) Error() string {
 // There must not be any characters before the colon other than a slash, otherwise the value is not replaced. For
 // example "/api/product/p:id" would not work as there is a "p" before the ":id".
 //
-// If no path value with the given name is found, a [MissingPathValueError] is returned.
+// If no path value with the given name is found, a [UnusedPathValueError] is returned.
 func WithPathValue(name string, value string) RequestOption {
 	pattern := regexp.MustCompile(fmt.Sprintf(`(^|/):%s(/|$)`, regexp.QuoteMeta(name)))
 
@@ -86,7 +86,7 @@ func WithPathValue(name string, value string) RequestOption {
 		replaced := pattern.ReplaceAllString(req.URL.Path, "${1}"+neturl.PathEscape(value)+"${2}")
 
 		if req.URL.Path == replaced {
-			return &MissingPathValueError{URL: *req.URL, Name: name, Value: value}
+			return &UnusedPathValueError{URL: *req.URL, Name: name, Value: value}
 		}
 
 		req.URL.Path = replaced
