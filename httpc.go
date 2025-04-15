@@ -3,48 +3,115 @@ package httpc
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/go-json-experiment/json"
 	"github.com/go-json-experiment/json/jsontext"
-
-	neturl "net/url"
+	"github.com/nussjustin/problem"
 )
 
-// RequestOption defines the signature for functions that can be used to configure a HTTP Request.
-type RequestOption func(*http.Request) error
+type fetchContext struct {
+	// Client is the underlying client used for making requests.
+	//
+	// Defaults to [http.DefaultClient].
+	Client *http.Client
 
-// NewRequest returns a new HTTP request for the given method and URL with the given options applied.
+	// Request contains the raw request that will be made.
+	Request *http.Request
+
+	// Handlers is used to process the response.
+	//
+	// Defaults to [DefaultHandlers].
+	Handler Handler
+}
+
+// DefaultHandlers is the default [Handler] used by [Fetch] if no other [Handler] was specified.
 //
-// It is equivalent to [http.NewRequestWithContext] followed by applying all options and returning on the first error.
-func NewRequest(ctx context.Context, method string, url string, opts ...RequestOption) (*http.Request, error) {
+// It will automatically handle RFC 9457 style errors, JSON and XML responses as well as 204 and 304 responses.
+var DefaultHandlers = HandlerChain{
+	ProblemHandler(),
+	ContentTypeHandler("application/json", UnmarshalJSONHandler()),
+	ContentTypeHandler("application/xml", UnmarshalXMLHandler(false)),
+	StatusHandler(http.StatusNoContent, DiscardBodyHandler()),
+	StatusHandler(http.StatusNotModified, DiscardBodyHandler()),
+}
+
+// FetchOption defines the signature for functions that can be used to configure the request creation and response
+// handling of [Fetch].
+type FetchOption func(*fetchContext) error
+
+// Fetch requests the given endpoint and returns the parsed response.
+//
+// Depending on the used [Handler], the response body may already be closed.
+//
+// The request and the response handling can be customized by passing different options.
+func Fetch[T any](ctx context.Context, method string, url string, opts ...FetchOption) (T, error) {
+	t, _, err := FetchWithResponse[T](ctx, method, url, opts...) //nolint:bodyclose
+	return t, err
+}
+
+// FetchWithResponse is the same as [Fetch], but also returns the raw response.
+//
+// If the response was already received, it will returned even on error.
+func FetchWithResponse[T any](
+	ctx context.Context,
+	method string,
+	url string,
+	opts ...FetchOption,
+) (T, *http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
-		return nil, err
+		var zeroT T
+		return zeroT, nil, err
 	}
 
+	fetchCtx := &fetchContext{Client: http.DefaultClient, Request: req, Handler: DefaultHandlers}
+
 	for _, opt := range opts {
-		if err := opt(req); err != nil {
-			return nil, err
+		if err := opt(fetchCtx); err != nil {
+			var zeroT T
+			return zeroT, nil, err
 		}
 	}
 
-	return req, nil
+	resp, err := fetchCtx.Client.Do(req)
+	if err != nil {
+		var zeroT T
+		return zeroT, resp, err
+	}
+
+	var t T
+
+	if err := fetchCtx.Handler.HandleResponse(&t, resp); err != nil {
+		var zeroT T
+		return zeroT, resp, err
+	}
+
+	return t, resp, nil
 }
 
-// WithBaseURL configures a request to use the given base URL:
+// WithClient sets the underlying client used by [Fetch] to make the request and receive the response.
+func WithClient(client *http.Client) FetchOption {
+	return func(fetchCtx *fetchContext) error {
+		fetchCtx.Client = client
+		return nil
+	}
+}
+
+// WithBaseURL configures a request to use the given base URL.
 //
 // This can be useful for example when the paths are always the same but the domain may differ and allows for easier
 // separation between those.
-func WithBaseURL(baseURL *neturl.URL) RequestOption {
-	return func(req *http.Request) error {
-		req.URL = baseURL.ResolveReference(req.URL)
+func WithBaseURL(baseURL *url.URL) FetchOption {
+	return func(ctx *fetchContext) error {
+		ctx.Request.URL = baseURL.ResolveReference(ctx.Request.URL)
 		return nil
 	}
 }
@@ -52,7 +119,7 @@ func WithBaseURL(baseURL *neturl.URL) RequestOption {
 // UnusedPathValueError is returned when a path value specified by [WithPathValue] is not found in the path.
 type UnusedPathValueError struct {
 	// URL is the URL as it was at the time the error occurred.
-	URL neturl.URL
+	URL *url.URL
 
 	// Name is the name of the path value as given to [WithPathValue]
 	Name string
@@ -63,33 +130,33 @@ type UnusedPathValueError struct {
 
 // Error implements the [error] interface.
 func (e *UnusedPathValueError) Error() string {
-	return fmt.Sprintf("placeholder :%s not found in path %s", e.Name, e.URL.Path)
+	return fmt.Sprintf("placeholder {%s} not found in path %s", e.Name, e.URL.Path)
 }
 
 // WithPathValue searches the URLs path for path values with the given key and replaces them with the given value.
 //
-// The syntax used is the same as when registering routes with [http.ServeMux] and uses a colon before the param name.
+// The syntax used is the same as when registering routes with [http.ServeMux].
 //
-// For example given the path "/api/product/:id", calling WithPathValue with name "id" and value "1234" will change the
-// path to "/api/product/1234".
+// For example given the path "/api/product/{id}", calling WithPathValue with name "id" and value "1234" will result in
+// the path "/api/product/1234".
 //
 // The value will automatically be escaped using [url.PathEscape].
 //
 // There must not be any characters before the colon other than a slash, otherwise the value is not replaced. For
-// example "/api/product/p:id" would not work as there is a "p" before the ":id".
+// example "/api/product/p{id}}" would not work as there is a "p" before the {id}.
 //
 // If no path value with the given name is found, a [UnusedPathValueError] is returned.
-func WithPathValue(name string, value string) RequestOption {
-	pattern := regexp.MustCompile(fmt.Sprintf(`(^|/):%s(/|$)`, regexp.QuoteMeta(name)))
+func WithPathValue(name string, value string) FetchOption {
+	pattern := regexp.MustCompile(fmt.Sprintf(`(^|/)\{%s\}(/|$)`, regexp.QuoteMeta(name)))
 
-	return func(req *http.Request) error {
-		replaced := pattern.ReplaceAllString(req.URL.Path, "${1}"+neturl.PathEscape(value)+"${2}")
+	return func(ctx *fetchContext) error {
+		replaced := pattern.ReplaceAllString(ctx.Request.URL.Path, "${1}"+url.PathEscape(value)+"${2}")
 
-		if req.URL.Path == replaced {
-			return &UnusedPathValueError{URL: *req.URL, Name: name, Value: value}
+		if ctx.Request.URL.Path == replaced {
+			return &UnusedPathValueError{URL: ctx.Request.URL, Name: name, Value: value}
 		}
 
-		req.URL.Path = replaced
+		ctx.Request.URL.Path = replaced
 		return nil
 	}
 }
@@ -97,11 +164,11 @@ func WithPathValue(name string, value string) RequestOption {
 // WithAddedQueryParam adds a query parameter.
 //
 // Existing values are kept and the new value is added after them.
-func WithAddedQueryParam(key, value string) RequestOption {
-	return func(req *http.Request) error {
-		q := req.URL.Query()
+func WithAddedQueryParam(key, value string) FetchOption {
+	return func(ctx *fetchContext) error {
+		q := ctx.Request.URL.Query()
 		q.Add(key, value)
-		req.URL.RawQuery = q.Encode()
+		ctx.Request.URL.RawQuery = q.Encode()
 		return nil
 	}
 }
@@ -109,11 +176,11 @@ func WithAddedQueryParam(key, value string) RequestOption {
 // WithQueryParam sets a query parameter.
 //
 // Any existing values for the parameter are replaced.
-func WithQueryParam(key, value string) RequestOption {
-	return func(req *http.Request) error {
-		q := req.URL.Query()
+func WithQueryParam(key, value string) FetchOption {
+	return func(ctx *fetchContext) error {
+		q := ctx.Request.URL.Query()
 		q.Set(key, value)
-		req.URL.RawQuery = q.Encode()
+		ctx.Request.URL.RawQuery = q.Encode()
 		return nil
 	}
 }
@@ -121,9 +188,9 @@ func WithQueryParam(key, value string) RequestOption {
 // WithAddedHeader adds a header parameter.
 //
 // Existing values are kept and the new value is added after them.
-func WithAddedHeader(key, value string) RequestOption {
-	return func(req *http.Request) error {
-		req.Header.Add(key, value)
+func WithAddedHeader(key, value string) FetchOption {
+	return func(ctx *fetchContext) error {
+		ctx.Request.Header.Add(key, value)
 		return nil
 	}
 }
@@ -131,35 +198,9 @@ func WithAddedHeader(key, value string) RequestOption {
 // WithHeader sets a header.
 //
 // Any existing values for the header are replaced.
-func WithHeader(key, value string) RequestOption {
-	return func(req *http.Request) error {
-		req.Header.Set(key, value)
-		return nil
-	}
-}
-
-// WithAddedTrailer adds a trailer parameter.
-//
-// Existing values are kept and the new value is added after them.
-func WithAddedTrailer(key, value string) RequestOption {
-	return func(req *http.Request) error {
-		if req.Trailer == nil {
-			req.Trailer = make(http.Header)
-		}
-		req.Trailer.Add(key, value)
-		return nil
-	}
-}
-
-// WithTrailer sets a trailer.
-//
-// Any existing values for the trailer are replaced.
-func WithTrailer(key, value string) RequestOption {
-	return func(req *http.Request) error {
-		if req.Trailer == nil {
-			req.Trailer = make(http.Header)
-		}
-		req.Trailer.Set(key, value)
+func WithHeader(key, value string) FetchOption {
+	return func(ctx *fetchContext) error {
+		ctx.Request.Header.Set(key, value)
 		return nil
 	}
 }
@@ -176,148 +217,176 @@ func asReadCloser(r io.Reader) io.ReadCloser {
 //
 // If the given reader is either a [*bytes.Buffer], [*bytes.Reader] or [*strings.Reader] it will also set the content
 // length to number of bytes available.
-func WithBody(body io.Reader) RequestOption {
-	return func(req *http.Request) error {
+func WithBody(body io.Reader) FetchOption {
+	return func(ctx *fetchContext) error {
 		switch v := body.(type) {
 		case *bytes.Buffer:
-			req.ContentLength = int64(v.Len())
+			ctx.Request.ContentLength = int64(v.Len())
 		case *bytes.Reader:
-			req.ContentLength = int64(v.Len())
+			ctx.Request.ContentLength = int64(v.Len())
 		case *strings.Reader:
-			req.ContentLength = int64(v.Len())
+			ctx.Request.ContentLength = int64(v.Len())
 		}
 
-		req.Body = asReadCloser(body)
+		ctx.Request.Body = asReadCloser(body)
 		return nil
 	}
 }
 
-// WithJSON encodes the given value as JSON and uses the result as the request body.
+// WithBodyJSON encodes the given value as JSON and uses the result as the request body.
 //
 // If the Content-Type header is not set or empty, it will be set to "application/json".
-func WithJSON(v any, opts ...jsontext.Options) RequestOption {
-	return func(req *http.Request) error {
+func WithBodyJSON(v any, opts ...jsontext.Options) FetchOption {
+	return func(ctx *fetchContext) error {
 		body, err := json.Marshal(v, opts...)
 		if err != nil {
 			return err
 		}
 
-		if req.Header.Get("Content-Type") == "" {
-			req.Header.Set("Content-Type", "application/json")
+		if ctx.Request.Header.Get("Content-Type") == "" {
+			ctx.Request.Header.Set("Content-Type", "application/json")
 		}
 
-		req.ContentLength = int64(len(body))
-		req.Body = io.NopCloser(bytes.NewReader(body))
+		ctx.Request.ContentLength = int64(len(body))
+		ctx.Request.Body = io.NopCloser(bytes.NewReader(body))
+		ctx.Request.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
 
 		return nil
 	}
 }
 
-// Endpoint defines an HTTP endpoint and allows requesting the endpoint and automatically returning the typed response.
-type Endpoint[T any] struct {
-	// Client is used to execute HTTP requests.
-	//
-	// If nil, [http.DefaultClient] is used.
-	Client *http.Client
-
-	// Method is the HTTP method used for the request.
-	Method string
-
-	// URL is the raw URL of the endpoint.
-	URL string
-
-	// Options can contain zero or more options which are used to modify requests.
-	Options []RequestOption
-
-	// Handlers contains a list of functions to handle the response.
-	Handlers []Handler
+// Handler specifies methods for handling responses.
+type Handler interface {
+	// HandleResponse is called after receiving a response and is passed both the response as well as a pointer to the
+	// value that should be filled with the response.
+	HandleResponse(dst any, resp *http.Response) error
 }
 
-// Do sends a request to the endpoint and returns the response.
-//
-// The response body will always be closed even if not handled.
-func (e *Endpoint[T]) Do(ctx context.Context, opts ...RequestOption) (T, *http.Response, error) {
-	var mergedOpts []RequestOption
+// HandlerFunc implements the [Handler] interface using itself as [Handler.HandleResponse] implementation.
+type HandlerFunc func(dst any, resp *http.Response) error
 
-	switch {
-	case len(e.Options) == 0:
-		mergedOpts = opts
-	case len(opts) == 0:
-		mergedOpts = e.Options
-	default:
-		mergedOpts = append(slices.Clip(e.Options), opts...)
-	}
-
-	req, err := NewRequest(ctx, e.Method, e.URL, mergedOpts...)
-	if err != nil {
-		var zeroT T
-		return zeroT, nil, err
-	}
-
-	client := e.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		var zeroT T
-		return zeroT, nil, err
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	var t T
-	var handled bool
-
-	for _, h := range e.Handlers {
-		handlerErr := h(&t, resp)
-
-		if handlerErr == nil {
-			handled = true
-			break
-		}
-
-		if errors.Is(handlerErr, ErrSkipHandler) {
-			continue
-		}
-
-		var zeroT T
-		return zeroT, nil, handlerErr
-	}
-
-	if !handled {
-		var zeroT T
-		return zeroT, nil, ErrNotHandled
-	}
-
-	return t, resp, nil
+// HandleResponse returns the result of calling h(dst, resp).
+func (h HandlerFunc) HandleResponse(dst any, resp *http.Response) error {
+	return h(dst, resp)
 }
 
-// Handler specifies the signature for functions that can handle a HTTP response.
+// ErrUnhandledResponse can be returned by [Handler.HandleResponse] when the implementation can not handle the
+// given response.
+var ErrUnhandledResponse = errors.New("github.com/nussjustin/httpc: unhandled response")
+
+// WithHandler sets the [Handler] used by [Fetch] to process the response.
+func WithHandler(h Handler) FetchOption {
+	return func(ctx *fetchContext) error {
+		ctx.Handler = h
+		return nil
+	}
+}
+
+// WithHandlerFunc is a shortcut for WithHandler(HandlerFunc(h)).
+func WithHandlerFunc(h HandlerFunc) FetchOption {
+	return WithHandler(h)
+}
+
+// HandlerChain wraps multiple [Handler] implementations in a single [Handler] that calls each underlying [Handler] in
+// order of first to last, until one returns a nil error or any error that is not [ErrUnhandledResponse], as determined
+// by [errors.Is].
 //
-// The dst value is a pointer to a value into which the response body should be written.
-type Handler func(dst any, resp *http.Response) error
+// If the chain is empty or no [Handler] can handle the response, [ErrUnhandledResponse] is returned.
+type HandlerChain []Handler
 
-var (
-	// ErrNotHandled is returned by [Endpoint.Do] if no [Handler] was able to handle the response.
-	ErrNotHandled = errors.New("not handled")
+// HandleResponse implements the [Handler] interface.
+func (h HandlerChain) HandleResponse(dst any, resp *http.Response) error {
+	for i := range h {
+		if err := h[i].HandleResponse(dst, resp); err == nil || !errors.Is(err, ErrUnhandledResponse) {
+			return err
+		}
+	}
 
-	// ErrSkipHandler can be returned by [Handler]s when they can not process the response, causing the next handler to
-	// be executed.
-	ErrSkipHandler = errors.New("handler skipped")
-)
+	return ErrUnhandledResponse
+}
 
 // ErrorHandler returns a [Handler] that returns the given error.
-func ErrorHandler(err error) Handler {
+func ErrorHandler(err error) HandlerFunc {
 	return func(any, *http.Response) error {
 		return err
 	}
 }
 
-// JSONHandler returns a [Handler] that decodes the response body as JSON.
-func JSONHandler(opts ...jsontext.Options) Handler {
+// ConditionalHandler returns a [Handler] that calls the given handler only if cond returns true for the response.
+func ConditionalHandler(cond func(*http.Response) bool, handler Handler) HandlerFunc {
+	return func(dst any, resp *http.Response) error {
+		if !cond(resp) {
+			return ErrUnhandledResponse
+		}
+
+		return handler.HandleResponse(dst, resp)
+	}
+}
+
+// ContentTypeHandler executes the given handler if the response content type matches the given content type.
+func ContentTypeHandler(contentType string, handler Handler) HandlerFunc {
+	return ConditionalHandler(
+		func(resp *http.Response) bool {
+			return resp.Header.Get("Content-Type") == contentType
+		},
+		handler,
+	)
+}
+
+// DiscardBodyHandler returns a [Handler] that discards the response body and closes it, but otherwise does nothing.
+func DiscardBodyHandler() HandlerFunc {
+	return func(_ any, resp *http.Response) (err error) {
+		defer func() {
+			if cErr := resp.Body.Close(); cErr != nil && err == nil {
+				err = cErr
+			}
+		}()
+
+		_, err = io.Copy(io.Discard, resp.Body)
+		return err
+	}
+}
+
+// ProblemHandler returns a [Handler] that detects JSON-encoded problem details as defined by RFC 9457.
+//
+// If the response returned a problem, it will be decoded and returned as error by [Fetch] and the response body will
+// be closed.
+func ProblemHandler() HandlerFunc {
+	return ContentTypeHandler(
+		problem.ContentType,
+		HandlerFunc(func(_ any, resp *http.Response) (err error) {
+			defer func() {
+				if cErr := resp.Body.Close(); cErr != nil && err == nil {
+					err = cErr
+				}
+			}()
+
+			details, err := problem.From(resp)
+			if err != nil {
+				return err
+			}
+
+			return details
+		}),
+	)
+}
+
+// StatusHandler executes the given handler if the response status matches the given status.
+func StatusHandler(statusCode int, handler Handler) HandlerFunc {
+	return ConditionalHandler(
+		func(resp *http.Response) bool {
+			return resp.StatusCode == statusCode
+		},
+		handler,
+	)
+}
+
+// UnmarshalJSONHandler returns a [Handler] that decodes the response body as JSON.
+//
+// The response body will automatically be closed.
+func UnmarshalJSONHandler(opts ...jsontext.Options) HandlerFunc {
 	return func(dst any, resp *http.Response) (err error) {
 		defer func() {
 			if cErr := resp.Body.Close(); cErr != nil && err == nil {
@@ -329,13 +398,20 @@ func JSONHandler(opts ...jsontext.Options) Handler {
 	}
 }
 
-// StatusHandler returns a [Handler] that checks the status code and either forwards the handling to the given handler
-// or, if the response status does not match the given one, returns [ErrSkipHandler].
-func StatusHandler(statusCode int, handler Handler) Handler {
-	return func(dst any, resp *http.Response) error {
-		if resp.StatusCode != statusCode {
-			return ErrSkipHandler
-		}
-		return handler(dst, resp)
+// UnmarshalXMLHandler returns a [Handler] that decodes the response body as JSON.
+//
+// The response body will automatically be closed.
+func UnmarshalXMLHandler(strict bool) HandlerFunc {
+	return func(dst any, resp *http.Response) (err error) {
+		defer func() {
+			if cErr := resp.Body.Close(); cErr != nil && err == nil {
+				err = cErr
+			}
+		}()
+
+		dec := xml.NewDecoder(resp.Body)
+		dec.Strict = strict
+
+		return dec.Decode(dst)
 	}
 }
