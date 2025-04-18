@@ -326,10 +326,22 @@ func ConditionalHandler(cond func(*http.Response) bool, handler Handler) Handler
 }
 
 // ContentTypeHandler executes the given handler if the response content type matches the given content type.
+//
+// The handler will compare the response content type both as is as well as with any parameters removed. So a response
+// content type like "application/json; charset=utf-8" will match against "application/json".
 func ContentTypeHandler(contentType string, handler Handler) HandlerFunc {
 	return ConditionalHandler(
 		func(resp *http.Response) bool {
-			return resp.Header.Get("Content-Type") == contentType
+			value := resp.Header.Get("Content-Type")
+
+			if value == contentType {
+				return true
+			}
+
+			// Try to match without parameters
+			value, _, _ = strings.Cut(value, ";")
+
+			return value == contentType
 		},
 		handler,
 	)

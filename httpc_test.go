@@ -54,6 +54,8 @@ func testEndpoint(tb testing.TB) (*http.Client, *url.URL) {
 			Body:   string(body),
 		}
 
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+
 		if err := json.MarshalWrite(w, &resp); err != nil {
 			panic(fmt.Errorf("failed to encode response: %w", err))
 		}
@@ -71,8 +73,6 @@ func testEndpoint(tb testing.TB) (*http.Client, *url.URL) {
 
 func TestFetch(t *testing.T) {
 	errTest := errors.New("test error")
-
-	client, baseURL := testEndpoint(t)
 
 	testCases := []struct {
 		Name string
@@ -232,10 +232,11 @@ func TestFetch(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.Name, func(t *testing.T) {
+			client, baseURL := testEndpoint(t)
+
 			opts := append([]httpc.FetchOption{
 				httpc.WithClient(client),
 				httpc.WithBaseURL(baseURL),
-				httpc.WithHandler(httpc.UnmarshalJSONHandler()),
 			}, testCase.Options...)
 
 			got, gotErr := httpc.Fetch[infoResponse](t.Context(), "GET", testCase.Path, opts...)
@@ -516,8 +517,13 @@ func TestContentTypeHandler(t *testing.T) {
 	mustHandle(t, httpc.ContentTypeHandler("application/json", wrapped), nil, resp)
 	wrapped.assertCalls(2)
 
+	resp.Header.Set("Content-Type", "application/json; charset=utf-8")
+
+	mustHandle(t, httpc.ContentTypeHandler("application/json", wrapped), nil, resp)
+	wrapped.assertCalls(3)
+
 	mustNotHandle(t, httpc.ContentTypeHandler("application/xml", wrapped), nil, resp)
-	wrapped.assertCalls(2)
+	wrapped.assertCalls(3)
 }
 
 func TestDiscardBodyHandler(t *testing.T) {
