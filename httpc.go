@@ -38,7 +38,7 @@ type fetchContext struct {
 var DefaultHandlers = HandlerChain{
 	ProblemHandler(),
 	ContentTypeHandler("application/json", UnmarshalJSONHandler()),
-	ContentTypeHandler("application/xml", UnmarshalXMLHandler(false)),
+	ContentTypeHandler("application/xml", UnmarshalXMLHandler(true)),
 	StatusHandler(http.StatusNoContent, DiscardBodyHandler()),
 	StatusHandler(http.StatusNotModified, DiscardBodyHandler()),
 }
