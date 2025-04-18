@@ -49,17 +49,22 @@ type FetchOption func(*fetchContext) error
 
 // Fetch requests the given endpoint and returns the parsed response.
 //
-// Depending on the used [Handler], the response body may already be closed.
-//
 // The request and the response handling can be customized by passing different options.
+//
+// In order to access the original response data, use [FetchWithResponse] instead.
 func Fetch[T any](ctx context.Context, method string, url string, opts ...FetchOption) (T, error) {
-	t, _, err := FetchWithResponse[T](ctx, method, url, opts...) //nolint:bodyclose
+	t, resp, err := FetchWithResponse[T](ctx, method, url, opts...)
+	if resp != nil {
+		defer func() { _ = discardBody(resp) }()
+	}
 	return t, err
 }
 
 // FetchWithResponse is the same as [Fetch], but also returns the raw response.
 //
-// If the response was already received, it will returned even on error.
+// Depending on the used [Handler], the response body may already be closed.
+//
+// If the response was already received, it will be returned even on error.
 func FetchWithResponse[T any](
 	ctx context.Context,
 	method string,
@@ -347,17 +352,21 @@ func ContentTypeHandler(contentType string, handler Handler) HandlerFunc {
 	)
 }
 
+func discardBody(resp *http.Response) (err error) {
+	defer func() {
+		if cErr := resp.Body.Close(); cErr != nil && err == nil {
+			err = cErr
+		}
+	}()
+
+	_, err = io.Copy(io.Discard, resp.Body)
+	return err
+}
+
 // DiscardBodyHandler returns a [Handler] that discards the response body and closes it, but otherwise does nothing.
 func DiscardBodyHandler() HandlerFunc {
 	return func(_ any, resp *http.Response) (err error) {
-		defer func() {
-			if cErr := resp.Body.Close(); cErr != nil && err == nil {
-				err = cErr
-			}
-		}()
-
-		_, err = io.Copy(io.Discard, resp.Body)
-		return err
+		return discardBody(resp)
 	}
 }
 
