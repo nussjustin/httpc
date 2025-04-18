@@ -9,8 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/go-json-experiment/json"
 	"github.com/go-json-experiment/json/jsontext"
@@ -121,47 +121,48 @@ func WithBaseURL(baseURL *url.URL) FetchOption {
 	}
 }
 
-// UnusedPathValueError is returned when a path value specified by [WithPathValue] is not found in the path.
-type UnusedPathValueError struct {
-	// URL is the URL as it was at the time the error occurred.
-	URL *url.URL
-
-	// Name is the name of the path value as given to [WithPathValue]
-	Name string
-
-	// Value is the value of the path value as given to [WithPathValue]
-	Value string
+// Copied from https://cs.opensource.google/go/go/+/master:src/net/http/pattern.go;drc=05ed8a00e07e93fd40cf8269bdf16d6d2b34740d;l=186
+func isValidWildcardName(s string) bool {
+	if s == "" {
+		return false
+	}
+	// Valid Go identifier.
+	for i, c := range s {
+		if !unicode.IsLetter(c) && c != '_' && (i == 0 || !unicode.IsDigit(c)) {
+			return false
+		}
+	}
+	return true
 }
 
-// Error implements the [error] interface.
-func (e *UnusedPathValueError) Error() string {
-	return fmt.Sprintf("placeholder {%s} not found in path %s", e.Name, e.URL.Path)
-}
-
-// WithPathValue searches the URLs path for path values with the given key and replaces them with the given value.
+// WithPathValue searches the URL path for wildcards with the given key and replaces them with the given value.
 //
-// The syntax used is the same as when registering routes with [http.ServeMux].
+// Wildcards are specified using { and } around a wildcard name. The wildcard name must be a valid Go identifier. If the
+// name is empty or not a valid Go identifier, WithPathValue will panic. Identifiers are case-sensitive.
 //
-// For example given the path "/api/product/{id}", calling WithPathValue with name "id" and value "1234" will result in
-// the path "/api/product/1234".
+// For example given the path "/product/{id}", calling WithPathValue("id", "1234") will result in "/product/1234".
+//
+// The wildcard is not required to be a full path segment. For example, "/b_{bucket}" is a valid pattern and calling
+// WithPathValue("bucket", "test") would result in a path of "/b_test".
 //
 // The value will automatically be escaped using [url.PathEscape].
 //
-// There must not be any characters before the colon other than a slash, otherwise the value is not replaced. For
-// example "/api/product/p{id}" would not work as there is a "p" before the {id}.
-//
-// If no path value with the given name is found, a [UnusedPathValueError] is returned.
+// Specifying WithPathValue multiple times with the same name will cause all but the first one to become no-ops.
 func WithPathValue(name string, value string) FetchOption {
-	pattern := regexp.MustCompile(fmt.Sprintf(`(^|/)\{%s\}(/|$)`, regexp.QuoteMeta(name)))
+	if name == "" {
+		panic(errors.New("empty wildcard"))
+	}
+
+	if !isValidWildcardName(name) {
+		panic(fmt.Errorf("bad wildcard name %q", name))
+	}
+
+	wildcard := "{" + name + "}"
+
+	escaped := url.PathEscape(value)
 
 	return func(ctx *fetchContext) error {
-		replaced := pattern.ReplaceAllString(ctx.Request.URL.Path, "${1}"+url.PathEscape(value)+"${2}")
-
-		if ctx.Request.URL.Path == replaced {
-			return &UnusedPathValueError{URL: ctx.Request.URL, Name: name, Value: value}
-		}
-
-		ctx.Request.URL.Path = replaced
+		ctx.Request.URL.Path = strings.ReplaceAll(ctx.Request.URL.Path, wildcard, escaped)
 		return nil
 	}
 }

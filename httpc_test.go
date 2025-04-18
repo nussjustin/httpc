@@ -100,6 +100,17 @@ func TestFetch(t *testing.T) {
 			},
 		},
 		{
+			Name: "WithPathValue - partial path segment",
+			Expected: infoResponse{
+				Path: "/prefix-A-suffix/B.json",
+			},
+			Path: "/prefix-{ValueA}-suffix/{ValueB}.json",
+			Options: []httpc.FetchOption{
+				httpc.WithPathValue("ValueA", "A"),
+				httpc.WithPathValue("ValueB", "B"),
+			},
+		},
+		{
 			Name: "WithPathValue - multiple matches",
 			Expected: infoResponse{
 				Path: "/A/B/A/B",
@@ -112,15 +123,35 @@ func TestFetch(t *testing.T) {
 		},
 		{
 			Name: "WithPathValue - unknown key",
-			Path: "/{ValueA}",
-			ExpectedError: &httpc.UnusedPathValueError{
-				URL:   &url.URL{Path: "/A"},
-				Name:  "ValueB",
-				Value: "B-1",
+			Expected: infoResponse{
+				Path: "/A",
 			},
+			Path: "/{ValueA}",
 			Options: []httpc.FetchOption{
 				httpc.WithPathValue("ValueA", "A"),
 				httpc.WithPathValue("ValueB", "B"),
+			},
+		},
+		{
+			Name: "WithPathValue - multiple values",
+			Expected: infoResponse{
+				Path: "/A-1",
+			},
+			Path: "/{ValueA}",
+			Options: []httpc.FetchOption{
+				httpc.WithPathValue("ValueA", "A-1"),
+				httpc.WithPathValue("ValueA", "A-2"),
+			},
+		},
+		{
+			Name: "WithPathValue - wildcard from wildcard",
+			Expected: infoResponse{
+				Path: "/%7BValueB%7D",
+			},
+			Path: "/{ValueA}",
+			Options: []httpc.FetchOption{
+				httpc.WithPathValue("ValueA", "{ValueB}"),
+				httpc.WithPathValue("ValueA", "B"),
 			},
 		},
 		{
@@ -346,6 +377,50 @@ func TestFetch_Errors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func assertPanic[T any](tb testing.TB, fn func()) (res T) {
+	tb.Helper()
+
+	defer func() {
+		v := recover()
+
+		if v == nil {
+			tb.Error("call did not panic")
+		}
+
+		t, ok := v.(T)
+		if !ok {
+			tb.Errorf("recovered value of type %T, want %T", v, res)
+		}
+
+		res = t
+	}()
+
+	fn()
+	return
+}
+
+func TestWithPathValue_Panic(t *testing.T) {
+	t.Run("Empty identifier", func(t *testing.T) {
+		err := assertPanic[error](t, func() {
+			httpc.WithPathValue("", "some value")
+		})
+
+		if got, want := err.Error(), "empty wildcard"; got != want {
+			t.Errorf("got error %v, want %v", got, want)
+		}
+	})
+
+	t.Run("Invalid identifier", func(t *testing.T) {
+		err := assertPanic[error](t, func() {
+			httpc.WithPathValue("-", "some value")
+		})
+
+		if got, want := err.Error(), "bad wildcard name \"-\""; got != want {
+			t.Errorf("got error %v, want %v", got, want)
+		}
+	})
 }
 
 func TestHandlerChain(t *testing.T) {
