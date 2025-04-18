@@ -1,5 +1,10 @@
 # httpc [![Go Reference](https://pkg.go.dev/badge/github.com/nussjustin/httpc.svg)](https://pkg.go.dev/github.com/nussjustin/httpc) [![Lint](https://github.com/nussjustin/httpc/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/nussjustin/httpc/actions/workflows/golangci-lint.yml) [![Test](https://github.com/nussjustin/httpc/actions/workflows/test.yml/badge.svg)](https://github.com/nussjustin/httpc/actions/workflows/test.yml)
 
+> [!WARNING]  
+> This module depends on the experimental github.com/go-json-experiment/json package.
+> This package is planned to become part of the Go standard library in form of a future json/v2 package.
+> Once that happens this module will be updated to use the new json/v2 package from the standard library instead.
+
 Package httpc provides functions for simplifying client-side HTTP request handling.
 
 ## Examples
