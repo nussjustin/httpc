@@ -26,7 +26,7 @@ type fetchContext struct {
 	// Request contains the raw request that will be made.
 	Request *http.Request
 
-	// Handlers is used to process the response.
+	// Handler is called to handle the response.
 	//
 	// Defaults to [DefaultHandlers].
 	Handler Handler
@@ -143,7 +143,7 @@ func (e *UnusedPathValueError) Error() string {
 // The value will automatically be escaped using [url.PathEscape].
 //
 // There must not be any characters before the colon other than a slash, otherwise the value is not replaced. For
-// example "/api/product/p{id}}" would not work as there is a "p" before the {id}.
+// example "/api/product/p{id}" would not work as there is a "p" before the {id}.
 //
 // If no path value with the given name is found, a [UnusedPathValueError] is returned.
 func WithPathValue(name string, value string) FetchOption {
@@ -259,7 +259,7 @@ func WithBodyJSON(v any, opts ...jsontext.Options) FetchOption {
 
 // Handler specifies methods for handling responses.
 type Handler interface {
-	// HandleResponse is called after receiving a response and is passed both the response as well as a pointer to the
+	// HandleResponse is called after receiving a response and is passed both the response and a pointer to the
 	// value that should be filled with the response.
 	HandleResponse(dst any, resp *http.Response) error
 }
