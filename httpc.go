@@ -121,7 +121,7 @@ func WithBaseURL(baseURL *url.URL) FetchOption {
 	}
 }
 
-// Copied from https://cs.opensource.google/go/go/+/master:src/net/http/pattern.go;drc=05ed8a00e07e93fd40cf8269bdf16d6d2b34740d;l=186
+// Copied from https://github.com/golang/go/blob/a11643df8ff8a575abe4abc7f25d09631424ea49/src/net/http/pattern.go#L186
 func isValidWildcardName(s string) bool {
 	if s == "" {
 		return false
