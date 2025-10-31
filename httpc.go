@@ -55,7 +55,7 @@ type FetchOption func(*fetchContext) error
 func Fetch[T any](ctx context.Context, method string, url string, opts ...FetchOption) (T, error) {
 	t, resp, err := FetchWithResponse[T](ctx, method, url, opts...)
 	if resp != nil {
-		defer func() { _ = discardBody(resp) }()
+		defer discardBody(resp, nil)
 	}
 	return t, err
 }
@@ -353,21 +353,23 @@ func ContentTypeHandler(contentType string, handler Handler) HandlerFunc {
 	)
 }
 
-func discardBody(resp *http.Response) (err error) {
+func discardBody(resp *http.Response, err *error) {
 	defer func() {
-		if cErr := resp.Body.Close(); cErr != nil && err == nil {
-			err = cErr
+		if cErr := resp.Body.Close(); cErr != nil && (err != nil && *err == nil) {
+			*err = cErr
 		}
 	}()
 
-	_, err = io.Copy(io.Discard, resp.Body)
-	return err
+	if _, rErr := io.Copy(io.Discard, resp.Body); rErr != nil && (err != nil && *err == nil) {
+		*err = rErr
+	}
 }
 
 // DiscardBodyHandler returns a [Handler] that discards the response body and closes it, but otherwise does nothing.
 func DiscardBodyHandler() HandlerFunc {
 	return func(_ any, resp *http.Response) (err error) {
-		return discardBody(resp)
+		discardBody(resp, &err)
+		return
 	}
 }
 
@@ -379,11 +381,7 @@ func ProblemHandler() HandlerFunc {
 	return ContentTypeHandler(
 		problem.ContentType,
 		HandlerFunc(func(_ any, resp *http.Response) (err error) {
-			defer func() {
-				if cErr := resp.Body.Close(); cErr != nil && err == nil {
-					err = cErr
-				}
-			}()
+			defer discardBody(resp, &err)
 
 			details, err := problem.From(resp)
 			if err != nil {
@@ -410,11 +408,7 @@ func StatusHandler(statusCode int, handler Handler) HandlerFunc {
 // The response body will automatically be closed.
 func UnmarshalJSONHandler(opts ...jsontext.Options) HandlerFunc {
 	return func(dst any, resp *http.Response) (err error) {
-		defer func() {
-			if cErr := resp.Body.Close(); cErr != nil && err == nil {
-				err = cErr
-			}
-		}()
+		defer discardBody(resp, &err)
 
 		return json.UnmarshalRead(resp.Body, dst, opts...)
 	}
@@ -425,11 +419,7 @@ func UnmarshalJSONHandler(opts ...jsontext.Options) HandlerFunc {
 // The response body will automatically be closed.
 func UnmarshalXMLHandler(strict bool) HandlerFunc {
 	return func(dst any, resp *http.Response) (err error) {
-		defer func() {
-			if cErr := resp.Body.Close(); cErr != nil && err == nil {
-				err = cErr
-			}
-		}()
+		defer discardBody(resp, &err)
 
 		dec := xml.NewDecoder(resp.Body)
 		dec.Strict = strict
