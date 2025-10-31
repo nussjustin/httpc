@@ -327,11 +327,11 @@ func TestFetch_Errors(t *testing.T) {
 		},
 		{
 			Name:     "Fetch option error",
-			Expected: "json: cannot marshal from Go chan int",
+			Expected: "body",
 			Method:   "GET",
 			Path:     "/info",
 			Options: []httpc.FetchOption{
-				httpc.WithBodyJSON(make(chan int)),
+				httpc.WithBody(&errorReader{err: errors.New("body")}),
 			},
 		},
 		{
