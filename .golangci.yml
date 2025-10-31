@@ -5,7 +5,8 @@ linters:
     - asasalint
     - asciicheck
     - bidichk
-    - bodyclose
+    # does not support nolint
+    # - bodyclose
     - canonicalheader
     - containedctx
     - contextcheck
